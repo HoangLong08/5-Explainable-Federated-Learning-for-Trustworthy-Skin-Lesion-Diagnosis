@@ -133,38 +133,85 @@ print("Model initialized.")
 # SUBSECTION 3.1: Overall Architecture
 # ============================================
 # Simulate Figure 1: Vẽ flowchart đơn giản (save as architecture.png)
+
+import matplotlib.pyplot as plt
+
 def draw_architecture():
-    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 8))
     ax.axis('off')
-    
-    # Clients
-    ax.text(0.1, 0.8, 'Clients (Hospitals)\nLocal Data (Non-IID)', bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue"))
-    ax.arrow(0.2, 0.8, 0.1, 0, head_width=0.02, head_length=0.02, fc='black')
-    
-    # Local Training
-    ax.text(0.35, 0.8, 'Local Training\n(FedAvg Local Epochs)', bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen"))
-    ax.arrow(0.45, 0.8, 0.1, 0, head_width=0.02, head_length=0.02, fc='black')
-    
-    # Send Updates
-    ax.text(0.6, 0.8, 'Send Model Updates\n(Weights/Gradients)', bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow"))
-    ax.arrow(0.7, 0.8, 0.05, -0.3, head_width=0.02, head_length=0.02, fc='black')
-    
-    # Server
-    ax.text(0.75, 0.5, 'Central Server\nAggregate (FedAvg)', bbox=dict(boxstyle="round,pad=0.3", facecolor="orange"))
-    ax.arrow(0.75, 0.4, 0, -0.2, head_width=0.02, head_length=0.02, fc='black')
-    
-    # Global Model
-    ax.text(0.75, 0.15, 'Global Model', bbox=dict(boxstyle="round,pad=0.3", facecolor="lightcoral"))
-    ax.arrow(0.8, 0.15, 0.1, 0.3, head_width=0.02, head_length=0.02, fc='black')
-    
-    # Inference + Grad-CAM
-    ax.text(0.95, 0.45, 'Inference:\nNew Image → Prediction\n+ Grad-CAM Heatmap\n(Overlay)', bbox=dict(boxstyle="round,pad=0.3", facecolor="pink"))
-    
-    ax.set_title('Figure 1: Proposed Architecture for Explainable FL')
-    plt.savefig('/kaggle/working/architecture.png', dpi=300, bbox_inches='tight')
+
+    # COLORS
+    c_client = "#b3d9ff"
+    c_local = "#b3ffcc"
+    c_update = "#ffff99"
+    c_server = "#ffcc80"
+    c_global = "#ff9999"
+    c_infer = "#ffb3e6"
+
+    # Y positions
+    Y = [0.75, 0.50, 0.25]
+
+    # ---- CLIENTS ----
+    for i, y in enumerate(Y, start=1):
+        ax.text(0.05, y, f"Client {i}\nHospital {chr(64 + i)}\nLocal Data (Non-IID)",
+                ha='center', bbox=dict(boxstyle="round,pad=0.4", facecolor=c_client))
+        ax.annotate("", xy=(0.18, y), xytext=(0.10, y),
+                    arrowprops=dict(arrowstyle="->"))
+
+    # ---- LOCAL TRAIN ----
+    for y in Y:
+        ax.text(0.25, y, "Local Training\n(E Local Epochs)", ha='center',
+                bbox=dict(boxstyle="round,pad=0.4", facecolor=c_local))
+        ax.annotate("", xy=(0.38, y), xytext=(0.30, y),
+                    arrowprops=dict(arrowstyle="->"))
+
+    # ---- SEND UPDATES ----
+    for y in Y:
+        ax.text(0.45, y, "Send Updates\n(Weights/Gradients)", ha='center',
+                bbox=dict(boxstyle="round,pad=0.4", facecolor=c_update))
+        ax.annotate("", xy=(0.60, 0.50), xytext=(0.52, y),
+                    arrowprops=dict(arrowstyle="->"))
+
+    # ---- CENTRAL SERVER ----
+    ax.text(0.65, 0.50, "Central Server\nFedAvg Aggregation",
+            ha='center', bbox=dict(boxstyle="round,pad=0.4", facecolor=c_server))
+    ax.annotate("", xy=(0.78, 0.50), xytext=(0.70, 0.50),
+                arrowprops=dict(arrowstyle="->"))
+
+    # ---- GLOBAL MODEL ----
+    ax.text(0.85, 0.50, "Global Model\n(Updated Each Round)", ha='center',
+            bbox=dict(boxstyle="round,pad=0.4", facecolor=c_global))
+
+    # ------------------------------------------------------------------
+    # >>> FIXED BROADCAST ARROWS (vòng xuống dưới, không chồng lên gì) <<<
+    # ------------------------------------------------------------------
+    for i, y in enumerate(Y):
+        curve_strength = -0.6 - i * 0.15   # cong mạnh xuống
+        ax.annotate("",
+                    xy=(0.25, y),
+                    xytext=(0.85, 0.50),
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        linestyle="--",
+                        connectionstyle=f"arc3,rad={curve_strength}",
+                        color="black"
+                    )
+        )
+
+    # ---- INFERENCE + GRAD-CAM ----
+    ax.text(0.85, 0.20,
+            "Inference on New Images\n↓\nGrad-CAM / Grad-CAM++\n(Explainability Heatmap)",
+            ha='center', bbox=dict(boxstyle="round,pad=0.4", facecolor=c_infer))
+
+    ax.annotate("", xy=(0.85, 0.28), xytext=(0.85, 0.45),
+                arrowprops=dict(arrowstyle="->"))
+
+    ax.set_title("Figure 1: Proposed Federated Learning Architecture with Explainability\n", fontsize=15)
+
+    plt.savefig("/kaggle/working/architecture.png", dpi=600, bbox_inches='tight')
     plt.show()
 
-draw_architecture()  # Chạy để save hình (dùng trong LaTeX: \includegraphics{architecture.png})
+draw_architecture()
 
 import copy
 
@@ -207,8 +254,6 @@ val_losses_per_round = []
 train_accs_per_round = []
 val_accs_per_round = []
 
-class_names = ['akiec', 'bcc', 'bkl', 'df', 'mel', 'nv', 'vasc']  # NOTE: adjust ordering if needed
-# But your label_map earlier: {'akiec':0, 'bcc':1, 'bkl':2, 'df':3, 'mel':4, 'nv':5, 'vasc':6}
 # If you prefer different ordering in plots, reorder class_names accordingly:
 class_names = ['nv','mel','bkl','bcc','akiec','vasc','df']  # <-- user asked rows in order: nv, mel, bkl, bcc, akiec, vasc, df
 
@@ -436,7 +481,7 @@ for i in range(3):
     axes[i, 3].set_ylim(0, 1)
    
 plt.tight_layout()
-plt.savefig('/kaggle/working/gradcam_samples.png', dpi=300, bbox_inches='tight')
+plt.savefig('/kaggle/working/gradcam_samples.png', dpi=600, bbox_inches='tight')
 plt.show()
 # Clean up hooks
 gradcam.remove_hooks()
@@ -460,7 +505,7 @@ plt.title('Training & Validation Loss per Round')
 plt.xticks(epochs)
 plt.grid(True, linestyle='--', alpha=0.4)
 plt.legend()
-plt.savefig('/kaggle/working/figs/loss_curve.png', dpi=200, bbox_inches='tight')
+plt.savefig('/kaggle/working/figs/loss_curve.png', dpi=600, bbox_inches='tight')
 plt.show()
 
 # 2) Training & Validation accuracy per epoch (round)
@@ -474,7 +519,7 @@ plt.xticks(epochs)
 plt.gca().yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
 plt.grid(True, linestyle='--', alpha=0.4)
 plt.legend()
-plt.savefig('/kaggle/working/figs/acc_curve.png', dpi=200, bbox_inches='tight')
+plt.savefig('/kaggle/working/figs/acc_curve.png', dpi=600, bbox_inches='tight')
 plt.show()
 
 # 3) Classification report -> heatmap
@@ -491,11 +536,10 @@ heatmap_df = report_df[['precision', 'recall', 'f1-score']].fillna(0)
 plt.figure(figsize=(10,6))
 sns.heatmap(heatmap_df, annot=True, fmt=".2f", cmap='viridis', cbar=True)
 plt.title('Classification Report (precision / recall / f1-score)')
-plt.savefig('/kaggle/working/figs/class_report_heatmap.png', dpi=200, bbox_inches='tight')
+plt.savefig('/kaggle/working/figs/class_report_heatmap.png', dpi=600, bbox_inches='tight')
 plt.show()
 
 # 4) Confusion Matrix (not normalized and normalized)
-cm = confusion_matrix(trues, preds, labels=[0,4,2,1,0,6,3])  # <= WARNING: you must supply label order correctly
 # Instead build mapping from your label numbers to the ordering you chose (nv, mel, bkl, bcc, akiec, vasc, df)
 # According to your label_map: {'akiec':0, 'bcc':1, 'bkl':2, 'df':3, 'mel':4, 'nv':5, 'vasc':6}
 # Desired display order (nv, mel, bkl, bcc, akiec, vasc, df) corresponds to label indices: [5,4,2,1,0,6,3]
@@ -506,7 +550,7 @@ sns.heatmap(cm, annot=True, fmt="d", xticklabels=['nv','mel','bkl','bcc','akiec'
 plt.ylabel('True')
 plt.xlabel('Predicted')
 plt.title('Confusion Matrix (Test set)')
-plt.savefig('/kaggle/working/figs/confusion_matrix.png', dpi=200, bbox_inches='tight')
+plt.savefig('/kaggle/working/figs/confusion_matrix.png', dpi=600, bbox_inches='tight')
 plt.show()
 
 # 5) Multi-class ROC curves + AUC
@@ -547,8 +591,19 @@ plt.xlabel('False Positive Rate (FPR)')
 plt.ylabel('True Positive Rate (TPR)')
 plt.title('Multi-class ROC curves')
 plt.legend(loc='lower right', fontsize='small')
-plt.savefig('/kaggle/working/figs/multiclass_roc_auc.png', dpi=200, bbox_inches='tight')
+plt.savefig('/kaggle/working/figs/multiclass_roc_auc.png', dpi=600, bbox_inches='tight')
 plt.show()
 
 print("Saved figures in /kaggle/working/figs/")
+
+# Log training results to CSV
+logs_df = pd.DataFrame({
+    'round': np.arange(1, len(train_losses_per_round) + 1),
+    'train_loss': train_losses_per_round,
+    'val_loss': val_losses_per_round,
+    'train_acc': train_accs_per_round,
+    'val_acc': val_accs_per_round
+})
+logs_df.to_csv('/kaggle/working/logs_fl_training.csv', index=False)
+print("Training logs saved to '/kaggle/working/logs_fl_training.csv'")
 # ---------------------------------------------------------------------------------------
