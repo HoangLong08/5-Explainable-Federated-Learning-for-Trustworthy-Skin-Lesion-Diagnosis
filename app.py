@@ -606,4 +606,38 @@ logs_df = pd.DataFrame({
 })
 logs_df.to_csv('/kaggle/working/logs_fl_training.csv', index=False)
 print("Training logs saved to '/kaggle/working/logs_fl_training.csv'")
+
+# Tạo figure với twin axes
+fig, ax1 = plt.subplots(figsize=(8, 6))  # Kích thước vuông vức cho single plot
+
+# Plot Loss trên ax1 (trục y trái)
+line1 = ax1.plot(epochs, train_losses_per_round, marker='o', label='Train Loss', linewidth=2, color='blue')
+line2 = ax1.plot(epochs, val_losses_per_round, marker='o', label='Val Loss', linewidth=2, color='lightblue')
+ax1.set_xlabel('Communication Round', fontsize=11)
+ax1.set_ylabel('Loss (Cross-Entropy)', fontsize=11, color='blue')
+ax1.tick_params(axis='y', labelcolor='blue')
+ax1.set_title('Global Model Convergence: Loss and Accuracy', fontsize=12, fontweight='bold')
+ax1.grid(True, linestyle='--', alpha=0.4)
+ax1.tick_params(axis='both', which='major', labelsize=10)
+
+# Tạo ax2 (twinx) cho Accuracy (trục y phải)
+ax2 = ax1.twinx()
+line3 = ax2.plot(epochs, train_accs_per_round, marker='s', label='Train Acc', linewidth=2, color='red')
+line4 = ax2.plot(epochs, val_accs_per_round, marker='s', label='Val Acc', linewidth=2, color='orange')
+ax2.set_ylabel('Accuracy (%)', fontsize=11, color='red')
+ax2.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))  # Hiển thị % cho accuracy
+ax2.tick_params(axis='y', labelcolor='red')
+ax2.tick_params(axis='both', which='major', labelsize=10)
+
+# Kết hợp legend từ cả hai axes
+lines = line1 + line2 + line3 + line4
+labels = [l.get_label() for l in lines]
+ax1.legend(lines, labels, loc='upper left', fontsize=10, framealpha=0.9)
+
+# Tight layout và save as PDF
+plt.tight_layout(pad=1.5)
+plt.savefig('/kaggle/working/figs/acc_loss_curve.pdf', dpi=600, bbox_inches='tight', format='pdf')
+plt.show()
+
+print("Combined acc_loss_curve.pdf saved in /kaggle/working/figs/. Ready for LaTeX insertion!")
 # ---------------------------------------------------------------------------------------
