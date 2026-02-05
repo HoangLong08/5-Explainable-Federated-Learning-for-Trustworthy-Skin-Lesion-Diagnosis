@@ -55,17 +55,37 @@ print(f"Cleaned dataset shape: {df.shape}")
 print(f"Classes: {df['dx'].value_counts()}")
 
 # ============================================
-# FIXED: Split train/test FIRST (80/20, stratify label) to avoid data leakage
+# CRITICAL FIX: Split by lesion_id to prevent data leakage (Review 2)
+# Same lesion should NOT appear in both train and test sets
 # ============================================
 
-train_df, test_df = train_test_split(df, test_size=0.2, stratify=df['label'], random_state=42)
-print(f"Train shape: {train_df.shape}, Test shape: {test_df.shape}")
+# Get unique lesion_ids
+unique_lesions = df['lesion_id'].unique()
+print(f"Total unique lesions: {len(unique_lesions)}")
 
-train_sub_df, val_df = train_test_split(
-    train_df, test_size=0.1, stratify=train_df['label'], random_state=42
-)  # 10% of train as val
+# Split lesion_ids into train/test (80/20)
+train_lesions, test_lesions = train_test_split(
+    unique_lesions, test_size=0.2, random_state=42
+)
+
+# Create train/test DataFrames based on lesion_id split
+train_df = df[df['lesion_id'].isin(train_lesions)].reset_index(drop=True)
+test_df = df[df['lesion_id'].isin(test_lesions)].reset_index(drop=True)
+
+print(f"Train shape: {train_df.shape} ({len(train_lesions)} lesions)")
+print(f"Test shape: {test_df.shape} ({len(test_lesions)} lesions)")
+
+# Further split train into train_sub and val (also by lesion_id)
+train_lesions_array = train_df['lesion_id'].unique()
+train_sub_lesions, val_lesions = train_test_split(
+    train_lesions_array, test_size=0.1, random_state=42
+)
+
+train_sub_df = train_df[train_df['lesion_id'].isin(train_sub_lesions)].reset_index(drop=True)
+val_df = train_df[train_df['lesion_id'].isin(val_lesions)].reset_index(drop=True)
 
 print(f"Train_sub shape: {train_sub_df.shape}, Val shape: {val_df.shape}, Test shape: {test_df.shape}")
+print("✓ No data leakage: Train/Val/Test split by unique lesion_id")
 
 # ============================================
 # FIXED: Handle Imbalance - Compute class weights from train_df
@@ -103,13 +123,59 @@ class HAM10000Dataset(Dataset):
 # Partition Non-IID theo 'localization' (simulate patients, 10 clients)
 num_clients = 10
 client_data = []
-locations = df['localization'].unique()[:num_clients]  # Use first 10 locations as "clients"
+locations = train_df['localization'].unique()[:num_clients]  # Use first 10 locations as "clients"
 for loc in locations:
-    client_df = df[df['localization'] == loc].sample(frac=1)  # Shuffle
+    client_df = train_df[train_df['localization'] == loc].sample(frac=1)  # Shuffle
     client_data.append(client_df)
 
 print(f"Partitioned into {num_clients} clients (Non-IID by location)")
 print(f"Client sizes: {[len(cd) for cd in client_data]}")  # Check balance
+
+# ============================================
+# ADDED: Detailed Non-IID Statistics (Review 1)
+# ============================================
+print("\n=== Non-IID Data Distribution Analysis ===")
+client_stats = []
+for i, (loc, client_df) in enumerate(zip(locations, client_data)):
+    class_dist = client_df['dx'].value_counts().to_dict()
+    stats = {
+        'Client': f'Client {i+1}',
+        'Location': loc,
+        'Total Samples': len(client_df),
+        'Unique Lesions': client_df['lesion_id'].nunique(),
+        **{cls: class_dist.get(cls, 0) for cls in ['nv', 'mel', 'bkl', 'bcc', 'akiec', 'vasc', 'df']}
+    }
+    client_stats.append(stats)
+
+client_stats_df = pd.DataFrame(client_stats)
+print(client_stats_df.to_string(index=False))
+client_stats_df.to_csv('/kaggle/working/client_non_iid_distribution.csv', index=False)
+
+# Visualize Non-IID distribution
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Plot 1: Sample distribution per client
+axes[0].bar(range(num_clients), [len(cd) for cd in client_data], color='steelblue')
+axes[0].set_xlabel('Client ID')
+axes[0].set_ylabel('Number of Samples')
+axes[0].set_title('Data Heterogeneity: Sample Count per Client')
+axes[0].set_xticks(range(num_clients))
+axes[0].set_xticklabels([f'C{i+1}' for i in range(num_clients)])
+axes[0].grid(axis='y', alpha=0.3)
+
+# Plot 2: Class distribution heatmap
+class_matrix = client_stats_df[['nv', 'mel', 'bkl', 'bcc', 'akiec', 'vasc', 'df']].values
+sns.heatmap(class_matrix.T, annot=True, fmt='d', cmap='YlOrRd', ax=axes[1],
+            xticklabels=[f'C{i+1}' for i in range(num_clients)],
+            yticklabels=['nv', 'mel', 'bkl', 'bcc', 'akiec', 'vasc', 'df'])
+axes[1].set_title('Class Distribution Heatmap (Non-IID)')
+axes[1].set_xlabel('Client ID')
+axes[1].set_ylabel('Disease Class')
+
+plt.tight_layout()
+plt.savefig('/kaggle/working/non_iid_analysis.png', dpi=600, bbox_inches='tight')
+plt.show()
+print("✓ Non-IID statistics saved to 'client_non_iid_distribution.csv'")
 
 from sklearn.utils.class_weight import compute_class_weight
 
@@ -216,9 +282,16 @@ draw_architecture()
 import copy
 
 # ============================================
-# SUBSECTION 3.2: Privacy-Preserving Training with FL (FedAvg)
+# SUBSECTION 3.2: Privacy-Preserving Training with FL (FedAvg + FedProx)
 # ============================================
-def local_train(model, dataloader, epochs, optimizer):
+def local_train(model, dataloader, epochs, optimizer, use_fedprox=False, global_model=None, mu=0.01):
+    """
+    Local training with optional FedProx regularization (Review 2, 3)
+    Args:
+        use_fedprox: If True, add proximal term to handle Non-IID data
+        global_model: Reference global model for proximal term
+        mu: Proximal term coefficient (default: 0.01)
+    """
     model.train()
     for _ in range(epochs):
         for images, labels in dataloader:
@@ -226,6 +299,14 @@ def local_train(model, dataloader, epochs, optimizer):
             optimizer.zero_grad()
             outputs = model(images)
             loss = criterion(outputs, labels)
+            
+            # FedProx: Add proximal term ||w - w_global||^2
+            if use_fedprox and global_model is not None:
+                proximal_term = 0.0
+                for w, w_g in zip(model.parameters(), global_model.parameters()):
+                    proximal_term += (w - w_g).norm(2)
+                loss += (mu / 2) * proximal_term
+            
             loss.backward()
             optimizer.step()
     return model
@@ -289,8 +370,14 @@ def evaluate_model_get_metrics(model, df_eval, batch_size=64, device=device, ret
 num_rounds = 30
 local_epochs = 5
 batch_size = 32
+USE_FEDPROX = True  # Set to True for FedProx, False for FedAvg (Review 2, 3)
+MU = 0.01  # FedProx proximal term coefficient
 
-# Copy initial model cho clients (shallow copy)
+print(f"\n=== Starting FL Training with {'FedProx' if USE_FEDPROX else 'FedAvg'} ===")
+if USE_FEDPROX:
+    print(f"FedProx μ (mu) = {MU}")
+
+# Copy initial model cho clients
 client_models = []
 for _ in range(num_clients):
     client_model = models.resnet18(pretrained=True)
@@ -305,6 +392,10 @@ for round_num in range(num_rounds):
     selected_clients = list(range(num_clients))
     updated_models = []
     selected_sizes = []
+    
+    # Store global model for FedProx
+    global_model_round = copy.deepcopy(model) if USE_FEDPROX else None
+    
     for client_idx in selected_clients:
         client_df = client_data[client_idx]
         if len(client_df) < batch_size:
@@ -314,8 +405,9 @@ for round_num in range(num_rounds):
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         local_optimizer = optim.SGD(client_models[client_idx].parameters(), lr=0.001, momentum=0.9)
         local_model = client_models[client_idx]
-        # Local train (one can log local loss per batch inside local_train if desired)
-        local_model = local_train(local_model, train_loader, local_epochs, local_optimizer)
+        # Local train with FedProx option
+        local_model = local_train(local_model, train_loader, local_epochs, local_optimizer, 
+                                 use_fedprox=USE_FEDPROX, global_model=global_model_round, mu=MU)
         updated_models.append(local_model)
         selected_sizes.append(len(client_df))
     if updated_models:
@@ -487,6 +579,102 @@ plt.show()
 gradcam.remove_hooks()
 print("Grad-CAM++ visualizations generated and saved as 'gradcam_samples.png'.")
 print("Use in LaTeX: \\includegraphics[width=\\textwidth]{gradcam_samples.png}")
+
+# ============================================
+# ADDED: Quantitative Grad-CAM++ Evaluation (Review 2)
+# Insertion & Deletion Metrics
+# ============================================
+print("\n=== Quantitative Grad-CAM++ Evaluation ===")
+
+def compute_insertion_deletion_scores(model, image_tensor, cam, target_class, steps=50):
+    """
+    Insertion: Start with blurred image, progressively insert pixels by importance
+    Deletion: Start with original image, progressively delete pixels by importance
+    """
+    model.eval()
+    # Get original prediction score
+    with torch.no_grad():
+        output_orig = model(image_tensor)
+        prob_orig = F.softmax(output_orig, dim=1)[0, target_class].item()
+    
+    # Prepare blurred version
+    blurred = transforms.GaussianBlur(kernel_size=21, sigma=10)(image_tensor)
+    
+    # Sort pixels by CAM importance
+    cam_flat = cam.flatten()
+    sorted_indices = np.argsort(cam_flat)[::-1]  # Descending order
+    
+    insertion_scores = []
+    deletion_scores = []
+    
+    step_size = max(1, len(sorted_indices) // steps)  # Ensure step size >= 1
+    for i in range(0, len(sorted_indices), step_size):
+        # Insertion: add top-i pixels from original to blurred
+        inserted = blurred.clone()
+        mask = np.zeros_like(cam_flat, dtype=bool)
+        mask[sorted_indices[:i+1]] = True
+        mask_2d = mask.reshape(cam.shape)
+        mask_tensor = torch.from_numpy(mask_2d).float().unsqueeze(0).unsqueeze(0).to(device)
+        mask_tensor = F.interpolate(mask_tensor, size=(224, 224), mode='nearest').squeeze()
+        for c in range(3):
+            inserted[0, c] = inserted[0, c] * (1 - mask_tensor) + image_tensor[0, c] * mask_tensor
+        
+        with torch.no_grad():
+            out_ins = model(inserted)
+            insertion_scores.append(F.softmax(out_ins, dim=1)[0, target_class].item())
+        
+        # Deletion: remove top-i pixels from original
+        deleted = image_tensor.clone()
+        for c in range(3):
+            deleted[0, c] = deleted[0, c] * (1 - mask_tensor) + blurred[0, c] * mask_tensor
+        
+        with torch.no_grad():
+            out_del = model(deleted)
+            deletion_scores.append(F.softmax(out_del, dim=1)[0, target_class].item())
+    
+    # Compute AUC
+    insertion_auc = np.trapz(insertion_scores, dx=1.0/len(insertion_scores))
+    deletion_auc = np.trapz(deletion_scores, dx=1.0/len(deletion_scores))
+    
+    return insertion_auc, deletion_auc, insertion_scores, deletion_scores
+
+# Evaluate on the 3 samples
+gradcam_metrics = []
+for i in range(3):
+    sample_idx = samples.iloc[i]
+    img_path = sample_idx['image_path']
+    true_label = int(sample_idx['label'])
+    
+    image = Image.open(img_path).convert('RGB')
+    input_tensor = transform(image).unsqueeze(0).to(device)
+    
+    # Re-generate CAM
+    gradcam_eval = GradCAMpp(model, target_layer)
+    cam, pred_class_idx = gradcam_eval(input_tensor)
+    
+    ins_auc, del_auc, ins_scores, del_scores = compute_insertion_deletion_scores(
+        model, input_tensor, cam, pred_class_idx, steps=50
+    )
+    
+    gradcam_metrics.append({
+        'Sample': i+1,
+        'True Class': inv_label_map[true_label],
+        'Pred Class': inv_label_map[pred_class_idx],
+        'Insertion AUC': ins_auc,
+        'Deletion AUC': del_auc
+    })
+    
+    gradcam_eval.remove_hooks()
+
+metrics_df = pd.DataFrame(gradcam_metrics)
+print(metrics_df.to_string(index=False))
+metrics_df.to_csv('/kaggle/working/gradcam_quantitative_metrics.csv', index=False)
+
+print(f"\nAverage Insertion AUC: {metrics_df['Insertion AUC'].mean():.4f}")
+print(f"Average Deletion AUC: {metrics_df['Deletion AUC'].mean():.4f}")
+print("✓ Higher Insertion AUC = better (faster to recover confidence by adding important pixels)")
+print("✓ Lower Deletion AUC = better (faster to lose confidence by removing important pixels)")
+print("✓ Quantitative metrics saved to 'gradcam_quantitative_metrics.csv'")
 
 # ---------- PLOTTING / SAVING FIGURES ----------
 import matplotlib.ticker as mtick
